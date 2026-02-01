@@ -1,0 +1,17 @@
+{
+  "to": "0xUSER_ADDRESS",
+  "legs": [
+    {
+      "chainId": 11155111,
+      "rwa1155": "0xRWA_CONTRACT_ON_SEPOLIA",
+      "tokenIds": [1,2,3],
+      "amounts": [5,5,5]
+    },
+    {
+      "chainId": 80002,
+      "rwa1155": "0xRWA_CONTRACT_ON_AMOY",
+      "tokenIds": [10,11],
+      "amounts": [1,2]
+    }
+  ]
+}

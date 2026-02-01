@@ -1,0 +1,78 @@
+{
+  "networks": {
+    "11155111": {
+      "name": "sepolia",
+      "explorer": "https://sepolia.etherscan.io",
+      "usdx": "0x7A99E83131C7bbc0568b59D64Fc547992a604515",
+      "rwa1155": "0xD203188230679cdCD8282d0Cd8D849aaD9311b7b",
+      "routerAndDelivery": "0x1ce151f5Bf0881B4e84B8c1e6590b51B6Ce21873",
+      "minterRole": "0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6",
+      "faucet": "https://cloud.google.com/application/web3/faucet/ethereum/sepolia"
+    },
+    "80002": {
+      "name": "amoy",
+      "explorer": "https://amoy.polygonscan.com",
+      "usdx": "0xa1db3C7Cea6Ae35ECB84773D8CdF58562e32C95e",
+      "rwa1155": "0xf10dBbb231BfaF7FcFc122F55E7b5333cC48b715",
+      "routerAndDelivery": "0xD203188230679cdCD8282d0Cd8D849aaD9311b7b",
+      "minterRole": "0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6",
+      "faucet": "https://faucet.stakepool.dev.br/amoy"
+    }
+  },
+  "assets": [
+    {
+      "chainId": 11155111,
+      "contract": "0xD203188230679cdCD8282d0Cd8D849aaD9311b7b",
+      "tokenId": 1,
+      "name": "RWA: Sepolia Asset #1",
+      "priceUSDx": 2000,
+      "image": "https://your-cdn.example/sepolia/1.png",
+      "supplyForDemo": 5
+    },
+    {
+      "chainId": 11155111,
+      "contract": "0xD203188230679cdCD8282d0Cd8D849aaD9311b7b",
+      "tokenId": 2,
+      "name": "RWA: Sepolia Asset #2",
+      "priceUSDx": 2500,
+      "image": "https://your-cdn.example/sepolia/2.png",
+      "supplyForDemo": 5
+    },
+    {
+      "chainId": 11155111,
+      "contract": "0xD203188230679cdCD8282d0Cd8D849aaD9311b7b",
+      "tokenId": 3,
+      "name": "RWA: Sepolia Asset #3",
+      "priceUSDx": 1500,
+      "image": "https://your-cdn.example/sepolia/3.png",
+      "supplyForDemo": 5
+    },
+    {
+      "chainId": 80002,
+      "contract": "0xf10dBbb231BfaF7FcFc122F55E7b5333cC48b715",
+      "tokenId": 11,
+      "name": "RWA: Amoy Asset #11",
+      "priceUSDx": 3000,
+      "image": "https://your-cdn.example/amoy/11.png",
+      "supplyForDemo": 10
+    },
+    {
+      "chainId": 80002,
+      "contract": "0xf10dBbb231BfaF7FcFc122F55E7b5333cC48b715",
+      "tokenId": 12,
+      "name": "RWA: Amoy Asset #12",
+      "priceUSDx": 1800,
+      "image": "https://your-cdn.example/amoy/12.png",
+      "supplyForDemo": 10
+    },
+    {
+      "chainId": 80002,
+      "contract": "0xf10dBbb231BfaF7FcFc122F55E7b5333cC48b715",
+      "tokenId": 13,
+      "name": "RWA: Amoy Asset #13",
+      "priceUSDx": 2200,
+      "image": "https://your-cdn.example/amoy/13.png",
+      "supplyForDemo": 10
+    }
+  ]
+}
