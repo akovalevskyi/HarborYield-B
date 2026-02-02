@@ -1,0 +1,50 @@
+{
+  "networks": {
+    "11155111": {
+      "name": "sepolia",
+      "explorer": "https://sepolia.etherscan.io",
+      "usdx": "0x7A99E83131C7bbc0568b59D64Fc547992a604515",
+      "rwa1155": "0x7055E13F116Dd8359485F6BC7A7280Fb5740479A",
+      "routerAndDelivery": "0x7BeFFe7cC797f3680eFCB48A46F960A087D46A35",
+      "minterRole": "0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6",
+      "faucet": "https://cloud.google.com/application/web3/faucet/ethereum/sepolia"
+    },
+    "80002": {
+      "name": "amoy",
+      "explorer": "https://amoy.polygonscan.com",
+      "usdx": "0xa1db3C7Cea6Ae35ECB84773D8CdF58562e32C95e",
+      "rwa1155": "0x416cec74453905Ce8BD49ad3301AF0Ce6b8070e2",
+      "routerAndDelivery": "0x9CdbF3CbA0692779afa57Fc6E1Cf27B5eB82343F",
+      "minterRole": "0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6",
+      "faucet": "https://faucet.stakepool.dev.br/amoy"
+    }
+  },
+  "assets": [
+    {
+      "chainId": 11155111,
+      "contract": "0x7055E13F116Dd8359485F6BC7A7280Fb5740479A",
+      "tokenId": 101,
+      "name": "Villa",
+      "subname": "Private Estate",
+      "description": "A coastal villa with private gardens, fractionalized into on-chain units.",
+      "category": "Real Estate",
+      "healthScore": 75,
+      "priceUSDx": 40,
+      "image": "https://www.amaviacollection.com/wp-content/uploads/2022/05/Villa-Gaia-1-scaled.jpeg",
+      "supplyForDemo": 500000
+    },
+    {
+      "chainId": 80002,
+      "contract": "0x416cec74453905Ce8BD49ad3301AF0Ce6b8070e2",
+      "tokenId": 201,
+      "name": "Van Gogh Painting",
+      "subname": "Post-Impressionist Masterpiece",
+      "description": "Museum-grade artwork with provenance, issued as a tradable digital share.",
+      "category": "Art",
+      "healthScore": 95,
+      "priceUSDx": 20,
+      "image": "https://www.nationalgallery.org.uk/media/b2gj4uld/n-3861-00-000081-xl-hd.jpg",
+      "supplyForDemo": 1000000
+    }
+  ]
+}
