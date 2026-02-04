@@ -18,6 +18,7 @@ const {
   ROUTER_AMOY,
   JOURNAL_OASIS,
   AES_KEY_B64,
+  CORS_ORIGINS = "",
   AUTO_EXECUTE = "false",
 } = process.env;
 
@@ -93,6 +94,31 @@ function log(...args) {
 
 function logErr(...args) {
   console.error(new Date().toISOString(), "-", ...args);
+}
+
+// --------- CORS ----------
+const ALLOWED_ORIGINS = new Set(
+  CORS_ORIGINS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) return;
+
+  if (ALLOWED_ORIGINS.size === 0) {
+    // If no origins configured, allow all (no credentials).
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  } else {
+    return;
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 // --------- AES-GCM helpers ----------
@@ -395,6 +421,11 @@ async function executeBatch({ payChainId, batchId, payTxHash }) {
 
 // --------- Express server ----------
 const app = express();
+app.use((req, res, next) => {
+  applyCors(req, res);
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  return next();
+});
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
