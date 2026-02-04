@@ -1,0 +1,28 @@
+[
+{
+      "chainId": 11155111,
+      "contract": "0x7055E13F116Dd8359485F6BC7A7280Fb5740479A",
+      "tokenId": 101,
+      "name": "Villa",
+      "subname": "Private Estate",
+      "description": "A coastal villa with private gardens, fractionalized into on-chain units.",
+      "category": "Real Estate",
+      "healthScore": 75,
+      "priceUSDx": 40,
+      "image": "https://www.amaviacollection.com/wp-content/uploads/2022/05/Villa-Gaia-1-scaled.jpeg",
+      "supplyForDemo": 500000
+    },
+    {
+      "chainId": 80002,
+      "contract": "0x416cec74453905Ce8BD49ad3301AF0Ce6b8070e2",
+      "tokenId": 201,
+      "name": "Van Gogh Painting",
+      "subname": "Post-Impressionist Masterpiece",
+      "description": "Museum-grade artwork with provenance, issued as a tradable digital share.",
+      "category": "Art",
+      "healthScore": 95,
+      "priceUSDx": 20,
+      "image": "https://www.nationalgallery.org.uk/media/b2gj4uld/n-3861-00-000081-xl-hd.jpg",
+      "supplyForDemo": 1000000
+    }
+]

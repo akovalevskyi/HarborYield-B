@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { ethers } from "ethers";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
 const {
   PORT = "8080",
@@ -48,19 +49,29 @@ const walletAmoy = new ethers.Wallet(RELAYER_PK, amoy);
 const walletOasis = new ethers.Wallet(RELAYER_PK, oasis);
 
 // --------- Minimal ABIs ----------
-const RouteAndDeliveryAbi = [
+const RouteDeliveryTradeAbi = [
   "event Paid(bytes32 indexed batchId, address indexed payer, uint256 amount, bytes32 indexed basketHash, bytes encryptedBasket)",
   "function getOrder(bytes32 batchId) view returns (address payer,uint256 paidAmount,bytes32 basketHash,bytes encryptedBasket,uint64 createdAt)",
   "function isDeliveredHere(bytes32 batchId) view returns (bool)",
   "function deliver(bytes32 batchId,address to,address rwa1155,uint256[] tokenIds,uint256[] amounts) external",
+  "function createListingWithSig(address seller,address rwa1155,uint256 tokenId,uint256 amount,uint256 pricePerUnit,uint256 deadline,bytes signature) external returns (uint256)",
+  "function buyListingWithSig(address buyer,uint256 listingId,uint256 amount,uint256 deadline,bytes signature) external",
+  "function transferAssetWithSig(address from,address rwa1155,address to,uint256 tokenId,uint256 amount,uint256 deadline,bytes signature) external",
+  "function cancelListingWithSig(address seller,uint256 listingId,uint256 deadline,bytes signature) external",
+  "function listings(uint256 listingId) view returns (address seller,address rwa1155,uint256 tokenId,uint256 amount,uint256 pricePerUnit,bool active)",
+  "function nonces(address user) view returns (uint256)",
   "function hasRole(bytes32 role, address account) view returns (bool)",
   "function RELAYER_ROLE() view returns (bytes32)",
 ];
 
-const TradeJournalAbi = [
-  "function hasReceipt(bytes32 batchId) view returns (bool)",
-  "function getReceipt(bytes32 batchId) view returns (address payer,bytes32 basketHash,uint256 payChainId,bytes32 payTxHash,uint256[] deliveryChainIds,bytes32[] deliveryTxHashes,uint64 recordedAt)",
-  "function recordReceipt(bytes32 batchId,address payer,bytes32 basketHash,uint256 payChainId,bytes32 payTxHash,uint256[] deliveryChainIds,bytes32[] deliveryTxHashes) external",
+const OasisNewAbi = [
+  "function recordPayment(bytes32 batchId,address payer,bytes32 basketHash,uint256 payChainId,bytes32 payTxHash,uint256 totalPaid) external returns (uint256)",
+  "function recordMovement(uint8 kind,bytes32 batchId,uint256 chainId,address rwa1155,uint256 tokenId,address from,address to,uint256 amount,uint256 price,bytes32 txHash) external returns (uint256)",
+  // recordBatchSummary / getBatchSummary intentionally omitted (old Oasis contract)
+  "function getEntry(uint256 entryId) view returns (tuple(uint8 kind,bytes32 batchId,uint256 chainId,address rwa1155,uint256 tokenId,address from,address to,uint256 amount,uint256 price,bytes32 txHash,bytes32 basketHash,uint256 payChainId,bytes32 payTxHash,uint64 recordedAt))",
+  "function getEntryIdsByBatch(bytes32 batchId,uint256 start,uint256 limit) view returns (uint256[])",
+  "function getEntryIdsByUser(address user,uint256 start,uint256 limit) view returns (uint256[])",
+  "function getEntryIdsByAsset(uint256 chainId,address rwa1155,uint256 tokenId,uint256 start,uint256 limit) view returns (uint256[])",
   "function hasRole(bytes32 role, address account) view returns (bool)",
   "function RELAYER_ROLE() view returns (bytes32)",
 ];
@@ -72,9 +83,9 @@ const AccessControlAbi = [
 ];
 
 // Contracts
-const routerSepolia = new ethers.Contract(ROUTER_SEPOLIA, RouteAndDeliveryAbi, walletSepolia);
-const routerAmoy = new ethers.Contract(ROUTER_AMOY, RouteAndDeliveryAbi, walletAmoy);
-const journal = new ethers.Contract(JOURNAL_OASIS, TradeJournalAbi, walletOasis);
+const routerSepolia = new ethers.Contract(ROUTER_SEPOLIA, RouteDeliveryTradeAbi, walletSepolia);
+const routerAmoy = new ethers.Contract(ROUTER_AMOY, RouteDeliveryTradeAbi, walletAmoy);
+const journal = new ethers.Contract(JOURNAL_OASIS, OasisNewAbi, walletOasis);
 
 function log(...args) {
   console.log(new Date().toISOString(), "-", ...args);
@@ -123,8 +134,16 @@ const CHAINS = {
   80002: { name: "amoy", router: routerAmoy, wallet: walletAmoy },
 };
 
-function loadFormatAssets() {
-  const file = path.join(process.cwd(), "format_assets.json");
+function getChainInfo(chainId) {
+  const info = CHAINS[Number(chainId)];
+  if (!info) throw new Error(`Unsupported chainId: ${chainId}`);
+  return info;
+}
+
+function loadAssets() {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const file = path.join(__dirname, "assets.json");
   try {
     const raw = fs.readFileSync(file, "utf8");
     return JSON.parse(raw);
@@ -138,39 +157,69 @@ async function checkRoles() {
   const relayerAmoy = walletAmoy.address;
   const relayerOasis = walletOasis.address;
   const results = [];
+  const getCodeSafe = async (provider, address) => {
+    try {
+      return await provider.getCode(address);
+    } catch (_e) {
+      return "0x";
+    }
+  };
 
-  // RouteAndDelivery RELAYER_ROLE (Sepolia/Amoy)
-  const routerRelayerRoleSepolia = await routerSepolia.RELAYER_ROLE();
-  const routerRelayerRoleAmoy = await routerAmoy.RELAYER_ROLE();
+  // RouteDeliveryTrade RELAYER_ROLE (Sepolia/Amoy)
+  const sepoliaCode = await getCodeSafe(sepolia, routerSepolia.target ?? routerSepolia.address);
+  if (sepoliaCode === "0x") {
+    results.push({
+      ok: false,
+      msg: `NO CONTRACT CODE on Sepolia for router ${routerSepolia.target ?? routerSepolia.address}`,
+    });
+  } else {
+    const routerRelayerRoleSepolia = await routerSepolia.RELAYER_ROLE();
+    const hasRelayerSepolia = await routerSepolia.hasRole(routerRelayerRoleSepolia, relayerSepolia);
+    results.push({
+      ok: hasRelayerSepolia,
+      msg: hasRelayerSepolia
+        ? `OK RELAYER_ROLE on Sepolia RouteDeliveryTrade for ${relayerSepolia}`
+        : `MISSING RELAYER_ROLE on Sepolia RouteDeliveryTrade for ${relayerSepolia}`,
+    });
+  }
 
-  const hasRelayerSepolia = await routerSepolia.hasRole(routerRelayerRoleSepolia, relayerSepolia);
-  const hasRelayerAmoy = await routerAmoy.hasRole(routerRelayerRoleAmoy, relayerAmoy);
+  const amoyCode = await getCodeSafe(amoy, routerAmoy.target ?? routerAmoy.address);
+  if (amoyCode === "0x") {
+    results.push({
+      ok: false,
+      msg: `NO CONTRACT CODE on Amoy for router ${routerAmoy.target ?? routerAmoy.address}`,
+    });
+  } else {
+    const routerRelayerRoleAmoy = await routerAmoy.RELAYER_ROLE();
+    const hasRelayerAmoy = await routerAmoy.hasRole(routerRelayerRoleAmoy, relayerAmoy);
+    results.push({
+      ok: hasRelayerAmoy,
+      msg: hasRelayerAmoy
+        ? `OK RELAYER_ROLE on Amoy RouteDeliveryTrade for ${relayerAmoy}`
+        : `MISSING RELAYER_ROLE on Amoy RouteDeliveryTrade for ${relayerAmoy}`,
+    });
+  }
 
-  results.push({
-    ok: hasRelayerSepolia,
-    msg: hasRelayerSepolia
-      ? `OK RELAYER_ROLE on Sepolia RouteAndDelivery for ${relayerSepolia}`
-      : `MISSING RELAYER_ROLE on Sepolia RouteAndDelivery for ${relayerSepolia}`,
-  });
-  results.push({
-    ok: hasRelayerAmoy,
-    msg: hasRelayerAmoy
-      ? `OK RELAYER_ROLE on Amoy RouteAndDelivery for ${relayerAmoy}`
-      : `MISSING RELAYER_ROLE on Amoy RouteAndDelivery for ${relayerAmoy}`,
-  });
+  // OasisNEW RELAYER_ROLE (Oasis)
+  const oasisCode = await getCodeSafe(oasis, journal.target ?? journal.address);
+  if (oasisCode === "0x") {
+    results.push({
+      ok: false,
+      msg: `NO CONTRACT CODE on Oasis for journal ${journal.target ?? journal.address}`,
+    });
+  } else {
+    const journalRole = await journal.RELAYER_ROLE();
+    const hasJournalRelayer = await journal.hasRole(journalRole, relayerOasis);
+    results.push({
+      ok: hasJournalRelayer,
+      msg: hasJournalRelayer
+        ? `OK RELAYER_ROLE on OasisNEW for ${relayerOasis}`
+        : `MISSING RELAYER_ROLE on OasisNEW for ${relayerOasis}`,
+    });
+  }
 
-  // TradeJournal RELAYER_ROLE (Oasis)
-  const journalRole = await journal.RELAYER_ROLE();
-  const hasJournalRelayer = await journal.hasRole(journalRole, relayerOasis);
-  results.push({
-    ok: hasJournalRelayer,
-    msg: hasJournalRelayer
-      ? `OK RELAYER_ROLE on Oasis TradeJournal for ${relayerOasis}`
-      : `MISSING RELAYER_ROLE on Oasis TradeJournal for ${relayerOasis}`,
-  });
-
-  // RWA MINTER_ROLE for RouteAndDelivery (from format_assets.json if present)
-  const fmt = loadFormatAssets();
+  // RWA MINTER_ROLE for RouteDeliveryTrade (from assets.json if present)
+  const fmt = loadAssets();
   const networks = fmt?.networks || {};
   const rwaByChain = new Map();
   for (const [chainId, info] of Object.entries(networks)) {
@@ -180,6 +229,14 @@ async function checkRoles() {
   for (const [chainId, rwaAddr] of rwaByChain.entries()) {
     const info = CHAINS[chainId];
     if (!info) continue;
+    const rwaCode = await getCodeSafe(info.wallet.provider, rwaAddr);
+    if (rwaCode === "0x") {
+      results.push({
+        ok: false,
+        msg: `NO CONTRACT CODE on chain ${chainId} for RWA ${rwaAddr}`,
+      });
+      continue;
+    }
     const rwa = new ethers.Contract(rwaAddr, AccessControlAbi, info.wallet);
     const minterRole = await rwa.MINTER_ROLE();
     const hasMinter = await rwa.hasRole(minterRole, info.router.target ?? info.router.address);
@@ -212,9 +269,10 @@ async function executeBatch({ payChainId, batchId, payTxHash }) {
     createdAt: Number(createdAt),
   });
 
-  // receipt presence (used for idempotency decisions)
-  const hasReceipt = await journal.hasReceipt(batchId);
-  log("[execute] journal.hasReceipt", { hasReceipt });
+  // Oasis entries by batch (used for idempotency decisions)
+  const existingIds = await journal.getEntryIdsByBatch(batchId, 0, 1);
+  const hasAnyEntry = Array.isArray(existingIds) && existingIds.length > 0;
+  log("[execute] journal.hasAnyEntry", { hasAnyEntry });
 
   // 2) decrypt basket
   log("[execute] decrypt basket");
@@ -243,6 +301,7 @@ async function executeBatch({ payChainId, batchId, payTxHash }) {
   // 3) deliver in each leg chain
   const deliveryChainIds = [];
   const deliveryTxHashes = [];
+  const deliveredLegs = [];
 
   for (const leg of legs) {
     const chainId = Number(leg.chainId);
@@ -261,13 +320,10 @@ async function executeBatch({ payChainId, batchId, payTxHash }) {
     // idempotency check on-chain
     const already = await info.router.isDeliveredHere(batchId);
     if (already) {
-      // Уже доставлено в этой сети — если квитанции нет, не пишем неполную.
-      if (!hasReceipt) {
-        throw new Error(`already delivered in chain ${chainId}, but receipt missing; refusing to write partial receipt`);
-      }
-      log("[execute] already delivered", { chainId });
-      continue;
-    }
+    // Уже доставлено в этой сети — пропускаем.
+    log("[execute] already delivered", { chainId });
+    continue;
+  }
 
     log("[execute] deliver tx send", { chainId });
     const tx = await info.router.deliver(batchId, to, rwa, tokenIds, amounts);
@@ -277,30 +333,49 @@ async function executeBatch({ payChainId, batchId, payTxHash }) {
 
     deliveryChainIds.push(chainId);
     deliveryTxHashes.push(rcpt.hash);
+    deliveredLegs.push({
+      chainId,
+      txHash: rcpt.hash,
+      rwa1155: rwa,
+      tokenIds,
+      amounts,
+    });
   }
 
-  // 4) write receipt to Oasis (idempotent)
-  let receiptTxHash = null;
-  if (!hasReceipt) {
-    // payTxHash: если фронт не передал, можешь оставить 0x00..00 для MVP
-    const payTx = payTxHash && ethers.isHexString(payTxHash, 32)
-      ? payTxHash
-      : ethers.ZeroHash;
-
-    log("[execute] recordReceipt send", { payTx });
-    const tx = await journal.recordReceipt(
-      batchId,
-      payer,
-      onchainHash,
-      payChainId,
-      payTx,
-      deliveryChainIds,
-      deliveryTxHashes
-    );
+  // 4) write entries to Oasis (idempotent on first call)
+  let paymentTxHash = null;
+  if (!hasAnyEntry) {
+    const payTx = payTxHash && ethers.isHexString(payTxHash, 32) ? payTxHash : ethers.ZeroHash;
+    log("[execute] recordPayment send", { payTx });
+    const tx = await journal.recordPayment(batchId, payer, onchainHash, payChainId, payTx, paidAmount);
     await tx.wait(1);
-    receiptTxHash = tx.hash;
-    log("[execute] recordReceipt mined", { txHash: receiptTxHash });
+    paymentTxHash = tx.hash;
+    log("[execute] recordPayment mined", { txHash: paymentTxHash });
   }
+
+  for (const leg of deliveredLegs) {
+    for (let i = 0; i < leg.tokenIds.length; i++) {
+      const tokenId = leg.tokenIds[i];
+      const amount = leg.amounts[i];
+      log("[execute] recordMovement send", { chainId: leg.chainId, txHash: leg.txHash, tokenId, amount });
+      const tx = await journal.recordMovement(
+        2,
+        batchId,
+        leg.chainId,
+        leg.rwa1155,
+        tokenId,
+        ethers.ZeroAddress,
+        to,
+        amount,
+        0,
+        leg.txHash
+      );
+      await tx.wait(1);
+      log("[execute] recordMovement mined", { txHash: tx.hash });
+    }
+  }
+
+  // recordBatchSummary disabled: current Oasis contract does not support it
 
   const result = {
     batchId,
@@ -308,7 +383,7 @@ async function executeBatch({ payChainId, batchId, payTxHash }) {
     paidAmount: paidAmount.toString(),
     basketHash: onchainHash,
     payChainId,
-    receiptTxHash,
+    paymentTxHash,
     deliveries: deliveryChainIds.map((cid, i) => ({
       chainId: cid,
       txHash: deliveryTxHashes[i],
@@ -323,6 +398,18 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// GET /assets
+app.get("/assets", (_req, res) => {
+  try {
+    const data = loadAssets();
+    if (!data) return res.status(500).json({ ok: false, error: "assets.json not found" });
+    return res.json({ ok: true, ...data });
+  } catch (e) {
+    logErr("[assets] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
 
 // POST /encryptBasket
 // body: { basket: {...} }
@@ -359,30 +446,378 @@ app.post("/execute", async (req, res) => {
   }
 });
 
-// GET /receipt/:batchId
-app.get("/receipt/:batchId", async (req, res) => {
+// POST /recordTrade
+// body: { chainId, rwa1155, tokenId, from, to, amount, priceUSDx, txHash, batchId? }
+app.post("/recordTrade", async (req, res) => {
+  try {
+    const chainId = Number(req.body?.chainId);
+    const rwa1155 = req.body?.rwa1155;
+    const tokenId = Number(req.body?.tokenId);
+    const from = req.body?.from;
+    const to = req.body?.to;
+    const amount = Number(req.body?.amount);
+    const priceUSDx = Number(req.body?.priceUSDx);
+    const txHash = req.body?.txHash;
+    const batchId = req.body?.batchId ?? ethers.ZeroHash;
+
+    if (!chainId) return res.status(400).json({ ok: false, error: "chainId required" });
+    if (!ethers.isAddress(rwa1155)) return res.status(400).json({ ok: false, error: "invalid rwa1155" });
+    if (!ethers.isAddress(from)) return res.status(400).json({ ok: false, error: "invalid from" });
+    if (!ethers.isAddress(to)) return res.status(400).json({ ok: false, error: "invalid to" });
+    if (!Number.isFinite(tokenId) || tokenId <= 0) return res.status(400).json({ ok: false, error: "invalid tokenId" });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: "invalid amount" });
+    if (!Number.isFinite(priceUSDx) || priceUSDx <= 0) return res.status(400).json({ ok: false, error: "invalid priceUSDx" });
+    if (!ethers.isHexString(txHash, 32)) return res.status(400).json({ ok: false, error: "txHash must be bytes32" });
+    if (batchId && !ethers.isHexString(batchId, 32)) {
+      return res.status(400).json({ ok: false, error: "batchId must be bytes32" });
+    }
+
+    const tx = await journal.recordMovement(
+      3,
+      batchId,
+      chainId,
+      rwa1155,
+      tokenId,
+      from,
+      to,
+      amount,
+      priceUSDx,
+      txHash
+    );
+    await tx.wait(1);
+    return res.json({ ok: true, txHash: tx.hash });
+  } catch (e) {
+    logErr("[recordTrade] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// POST /recordTransfer
+// body: { chainId, rwa1155, tokenId, from, to, amount, txHash, batchId? }
+app.post("/recordTransfer", async (req, res) => {
+  try {
+    const chainId = Number(req.body?.chainId);
+    const rwa1155 = req.body?.rwa1155;
+    const tokenId = Number(req.body?.tokenId);
+    const from = req.body?.from;
+    const to = req.body?.to;
+    const amount = Number(req.body?.amount);
+    const txHash = req.body?.txHash;
+    const batchId = req.body?.batchId ?? ethers.ZeroHash;
+
+    if (!chainId) return res.status(400).json({ ok: false, error: "chainId required" });
+    if (!ethers.isAddress(rwa1155)) return res.status(400).json({ ok: false, error: "invalid rwa1155" });
+    if (!ethers.isAddress(from)) return res.status(400).json({ ok: false, error: "invalid from" });
+    if (!ethers.isAddress(to)) return res.status(400).json({ ok: false, error: "invalid to" });
+    if (!Number.isFinite(tokenId) || tokenId <= 0) return res.status(400).json({ ok: false, error: "invalid tokenId" });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: "invalid amount" });
+    if (!ethers.isHexString(txHash, 32)) return res.status(400).json({ ok: false, error: "txHash must be bytes32" });
+    if (batchId && !ethers.isHexString(batchId, 32)) {
+      return res.status(400).json({ ok: false, error: "batchId must be bytes32" });
+    }
+
+    const tx = await journal.recordMovement(
+      4,
+      batchId,
+      chainId,
+      rwa1155,
+      tokenId,
+      from,
+      to,
+      amount,
+      0,
+      txHash
+    );
+    await tx.wait(1);
+    return res.json({ ok: true, txHash: tx.hash });
+  } catch (e) {
+    logErr("[recordTransfer] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// --- Meta-tx marketplace relay ---
+app.post("/market/list", async (req, res) => {
+  try {
+    log("[market/list] request", req.body);
+    const chainId = Number(req.body?.chainId);
+    const seller = req.body?.seller;
+    const rwa1155 = req.body?.rwa1155;
+    const tokenId = Number(req.body?.tokenId);
+    const amount = Number(req.body?.amount);
+    const pricePerUnit = Number(req.body?.pricePerUnit);
+    const deadline = Number(req.body?.deadline);
+    const signature = req.body?.signature;
+
+    if (!chainId) return res.status(400).json({ ok: false, error: "chainId required" });
+    if (!ethers.isAddress(seller)) return res.status(400).json({ ok: false, error: "invalid seller" });
+    if (!ethers.isAddress(rwa1155)) return res.status(400).json({ ok: false, error: "invalid rwa1155" });
+    if (!Number.isFinite(tokenId) || tokenId <= 0) return res.status(400).json({ ok: false, error: "invalid tokenId" });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: "invalid amount" });
+    if (!Number.isFinite(pricePerUnit) || pricePerUnit <= 0) return res.status(400).json({ ok: false, error: "invalid pricePerUnit" });
+    if (!Number.isFinite(deadline) || deadline <= 0) return res.status(400).json({ ok: false, error: "invalid deadline" });
+    if (!ethers.isHexString(signature)) return res.status(400).json({ ok: false, error: "invalid signature" });
+
+    const info = getChainInfo(chainId);
+    const tx = await info.router.createListingWithSig(
+      seller,
+      rwa1155,
+      tokenId,
+      amount,
+      pricePerUnit,
+      deadline,
+      signature
+    );
+    await tx.wait(1);
+    const recordTx = await journal.recordMovement(
+      5,
+      ethers.ZeroHash,
+      chainId,
+      rwa1155,
+      tokenId,
+      seller,
+      info.router.target ?? info.router.address,
+      amount,
+      pricePerUnit,
+      tx.hash
+    );
+    await recordTx.wait(1);
+    return res.json({ ok: true, txHash: tx.hash, oasisTxHash: recordTx.hash });
+  } catch (e) {
+    logErr("[market/list] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/market/buy", async (req, res) => {
+  try {
+    log("[market/buy] request", req.body);
+    const chainId = Number(req.body?.chainId);
+    const buyer = req.body?.buyer;
+    const listingId = Number(req.body?.listingId);
+    const amount = Number(req.body?.amount);
+    const deadline = Number(req.body?.deadline);
+    const signature = req.body?.signature;
+
+    if (!chainId) return res.status(400).json({ ok: false, error: "chainId required" });
+    if (!ethers.isAddress(buyer)) return res.status(400).json({ ok: false, error: "invalid buyer" });
+    if (!Number.isFinite(listingId) || listingId <= 0) return res.status(400).json({ ok: false, error: "invalid listingId" });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: "invalid amount" });
+    if (!Number.isFinite(deadline) || deadline <= 0) return res.status(400).json({ ok: false, error: "invalid deadline" });
+    if (!ethers.isHexString(signature)) return res.status(400).json({ ok: false, error: "invalid signature" });
+
+    const info = getChainInfo(chainId);
+    const listing = await info.router.listings(listingId);
+    const seller = listing[0];
+    const rwa1155 = listing[1];
+    const tokenId = Number(listing[2]);
+    const pricePerUnit = Number(listing[4]);
+
+    try {
+      await info.router.buyListingWithSig.staticCall(buyer, listingId, amount, deadline, signature);
+      log("[market/buy] staticCall ok");
+    } catch (err) {
+      logErr("[market/buy] staticCall error", {
+        reason: err?.reason,
+        shortMessage: err?.shortMessage,
+        errorName: err?.errorName,
+        errorArgs: err?.errorArgs,
+        data: err?.data,
+        message: err?.message,
+      });
+    }
+
+    const tx = await info.router.buyListingWithSig(buyer, listingId, amount, deadline, signature);
+    await tx.wait(1);
+    const totalPrice = pricePerUnit * amount;
+    const recordTx = await journal.recordMovement(
+      3,
+      ethers.ZeroHash,
+      chainId,
+      rwa1155,
+      tokenId,
+      seller,
+      buyer,
+      amount,
+      totalPrice,
+      tx.hash
+    );
+    await recordTx.wait(1);
+    return res.json({ ok: true, txHash: tx.hash, oasisTxHash: recordTx.hash });
+  } catch (e) {
+    logErr("[market/buy] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/market/transfer", async (req, res) => {
+  try {
+    log("[market/transfer] request", req.body);
+    const chainId = Number(req.body?.chainId);
+    const from = req.body?.from;
+    const to = req.body?.to;
+    const rwa1155 = req.body?.rwa1155;
+    const tokenId = Number(req.body?.tokenId);
+    const amount = Number(req.body?.amount);
+    const deadline = Number(req.body?.deadline);
+    const signature = req.body?.signature;
+
+    if (!chainId) return res.status(400).json({ ok: false, error: "chainId required" });
+    if (!ethers.isAddress(from)) return res.status(400).json({ ok: false, error: "invalid from" });
+    if (!ethers.isAddress(to)) return res.status(400).json({ ok: false, error: "invalid to" });
+    if (!ethers.isAddress(rwa1155)) return res.status(400).json({ ok: false, error: "invalid rwa1155" });
+    if (!Number.isFinite(tokenId) || tokenId <= 0) return res.status(400).json({ ok: false, error: "invalid tokenId" });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: "invalid amount" });
+    if (!Number.isFinite(deadline) || deadline <= 0) return res.status(400).json({ ok: false, error: "invalid deadline" });
+    if (!ethers.isHexString(signature)) return res.status(400).json({ ok: false, error: "invalid signature" });
+
+    const info = getChainInfo(chainId);
+    const tx = await info.router.transferAssetWithSig(
+      from,
+      rwa1155,
+      to,
+      tokenId,
+      amount,
+      deadline,
+      signature
+    );
+    await tx.wait(1);
+    const recordTx = await journal.recordMovement(
+      4,
+      ethers.ZeroHash,
+      chainId,
+      rwa1155,
+      tokenId,
+      from,
+      to,
+      amount,
+      0,
+      tx.hash
+    );
+    await recordTx.wait(1);
+    return res.json({ ok: true, txHash: tx.hash, oasisTxHash: recordTx.hash });
+  } catch (e) {
+    logErr("[market/transfer] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/market/cancel", async (req, res) => {
+  try {
+    log("[market/cancel] request", req.body);
+    const chainId = Number(req.body?.chainId);
+    const seller = req.body?.seller;
+    const listingId = Number(req.body?.listingId);
+    const deadline = Number(req.body?.deadline);
+    const signature = req.body?.signature;
+
+    if (!chainId) return res.status(400).json({ ok: false, error: "chainId required" });
+    if (!ethers.isAddress(seller)) return res.status(400).json({ ok: false, error: "invalid seller" });
+    if (!Number.isFinite(listingId) || listingId <= 0) return res.status(400).json({ ok: false, error: "invalid listingId" });
+    if (!Number.isFinite(deadline) || deadline <= 0) return res.status(400).json({ ok: false, error: "invalid deadline" });
+    if (!ethers.isHexString(signature)) return res.status(400).json({ ok: false, error: "invalid signature" });
+
+    const info = getChainInfo(chainId);
+    const listing = await info.router.listings(listingId);
+    const rwa1155 = listing[1];
+    const tokenId = Number(listing[2]);
+    const amount = Number(listing[3]);
+
+    const tx = await info.router.cancelListingWithSig(seller, listingId, deadline, signature);
+    await tx.wait(1);
+    if (amount > 0) {
+      const recordTx = await journal.recordMovement(
+        6,
+        ethers.ZeroHash,
+        chainId,
+        rwa1155,
+        tokenId,
+        info.router.target ?? info.router.address,
+        seller,
+        amount,
+        0,
+        tx.hash
+      );
+      await recordTx.wait(1);
+      return res.json({ ok: true, txHash: tx.hash, oasisTxHash: recordTx.hash });
+    }
+    return res.json({ ok: true, txHash: tx.hash, oasisTxHash: null });
+  } catch (e) {
+    logErr("[market/cancel] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// GET /entries/batch/:batchId
+app.get("/entries/batch/:batchId", async (req, res) => {
   try {
     const batchId = req.params?.batchId;
     if (!batchId || !ethers.isHexString(batchId, 32)) {
       return res.status(400).json({ ok: false, error: "batchId must be bytes32 hex (0x..32 bytes)" });
     }
-    const has = await journal.hasReceipt(batchId);
-    if (!has) return res.status(404).json({ ok: false, error: "receipt not found" });
-    const receipt = await journal.getReceipt(batchId);
-    return res.json({
-      ok: true,
-      receipt: {
-        payer: receipt[0],
-        basketHash: receipt[1],
-        payChainId: Number(receipt[2]),
-        payTxHash: receipt[3],
-        deliveryChainIds: receipt[4].map((v) => Number(v)),
-        deliveryTxHashes: receipt[5],
-        recordedAt: Number(receipt[6]),
-      },
-    });
+    const ids = await journal.getEntryIdsByBatch(batchId, 0, 100);
+    return res.json({ ok: true, entryIds: ids.map((v) => Number(v)) });
   } catch (e) {
-    logErr("[receipt] error", e?.message || e);
+    logErr("[entries/batch] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// GET /entry/:id
+app.get("/entry/:id", async (req, res) => {
+  try {
+    const id = Number(req.params?.id);
+    if (!id || id < 1) return res.status(400).json({ ok: false, error: "id must be positive integer" });
+    const entry = await journal.getEntry(id);
+    return res.json({ ok: true, entry });
+  } catch (e) {
+    logErr("[entry] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// GET /entries/user/:address
+app.get("/entries/user/:address", async (req, res) => {
+  try {
+    const user = req.params?.address;
+    if (!user || !ethers.isAddress(user)) {
+      return res.status(400).json({ ok: false, error: "invalid address" });
+    }
+    const ids = await journal.getEntryIdsByUser(user, 0, 100);
+    return res.json({ ok: true, entryIds: ids.map((v) => Number(v)) });
+  } catch (e) {
+    logErr("[entries/user] error", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// GET /entries/asset/:chainId/:rwa1155/:tokenId
+app.get("/entries/asset/:chainId/:rwa1155/:tokenId", async (req, res) => {
+  try {
+    const chainId = Number(req.params?.chainId);
+    const rwa1155 = req.params?.rwa1155;
+    const tokenId = Number(req.params?.tokenId);
+    if (!chainId) return res.status(400).json({ ok: false, error: "invalid chainId" });
+    if (!ethers.isAddress(rwa1155)) return res.status(400).json({ ok: false, error: "invalid rwa1155" });
+    if (!tokenId || tokenId < 1) return res.status(400).json({ ok: false, error: "invalid tokenId" });
+
+    const ids = await journal.getEntryIdsByAsset(chainId, rwa1155, tokenId, 0, 200);
+    const entries = [];
+    for (const id of ids) {
+      const entry = await journal.getEntry(id);
+      entries.push({
+        id: Number(id),
+        kind: Number(entry.kind),
+        price: Number(entry.price),
+        amount: Number(entry.amount),
+        from: entry.from,
+        to: entry.to,
+        recordedAt: Number(entry.recordedAt),
+      });
+    }
+    return res.json({ ok: true, entries });
+  } catch (e) {
+    logErr("[entries/asset] error", e?.message || e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
