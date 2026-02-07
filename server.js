@@ -10,16 +10,20 @@ const {
   PORT = "8080",
   SEPOLIA_RPC,
   AMOY_RPC,
+  BSC_RPC,
   OASIS_RPC,
   SEPOLIA_WS,
   AMOY_WS,
+  BSC_WS,
   RELAYER_PK,
   ROUTER_SEPOLIA,
   ROUTER_AMOY,
+  ROUTER_BSC,
   JOURNAL_OASIS,
   AES_KEY_B64,
   CORS_ORIGINS = "",
   AUTO_EXECUTE = "false",
+  BSC_CHAIN_ID = "97",
 } = process.env;
 
 function must(v, name) {
@@ -29,12 +33,19 @@ function must(v, name) {
 
 must(SEPOLIA_RPC, "SEPOLIA_RPC");
 must(AMOY_RPC, "AMOY_RPC");
+must(BSC_RPC, "BSC_RPC");
 must(OASIS_RPC, "OASIS_RPC");
 must(RELAYER_PK, "RELAYER_PK");
 must(ROUTER_SEPOLIA, "ROUTER_SEPOLIA");
 must(ROUTER_AMOY, "ROUTER_AMOY");
+must(ROUTER_BSC, "ROUTER_BSC");
 must(JOURNAL_OASIS, "JOURNAL_OASIS");
 must(AES_KEY_B64, "AES_KEY_B64");
+
+const BSC_CHAIN = Number(BSC_CHAIN_ID);
+if (!Number.isFinite(BSC_CHAIN) || BSC_CHAIN <= 0) {
+  throw new Error(`Invalid BSC_CHAIN_ID: ${BSC_CHAIN_ID}`);
+}
 
 // --------- Providers / Wallets ----------
 const sepolia = SEPOLIA_WS
@@ -43,10 +54,12 @@ const sepolia = SEPOLIA_WS
 const amoy = AMOY_WS
   ? new ethers.WebSocketProvider(AMOY_WS)
   : new ethers.JsonRpcProvider(AMOY_RPC);
+const bsc = BSC_WS ? new ethers.WebSocketProvider(BSC_WS) : new ethers.JsonRpcProvider(BSC_RPC);
 const oasis = new ethers.JsonRpcProvider(OASIS_RPC);
 
 const walletSepolia = new ethers.Wallet(RELAYER_PK, sepolia);
 const walletAmoy = new ethers.Wallet(RELAYER_PK, amoy);
+const walletBsc = new ethers.Wallet(RELAYER_PK, bsc);
 const walletOasis = new ethers.Wallet(RELAYER_PK, oasis);
 
 // --------- Minimal ABIs ----------
@@ -86,6 +99,7 @@ const AccessControlAbi = [
 // Contracts
 const routerSepolia = new ethers.Contract(ROUTER_SEPOLIA, RouteDeliveryTradeAbi, walletSepolia);
 const routerAmoy = new ethers.Contract(ROUTER_AMOY, RouteDeliveryTradeAbi, walletAmoy);
+const routerBsc = new ethers.Contract(ROUTER_BSC, RouteDeliveryTradeAbi, walletBsc);
 const journal = new ethers.Contract(JOURNAL_OASIS, OasisNewAbi, walletOasis);
 
 function log(...args) {
@@ -158,6 +172,7 @@ function basketHash(obj) {
 const CHAINS = {
   11155111: { name: "sepolia", router: routerSepolia, wallet: walletSepolia },
   80002: { name: "amoy", router: routerAmoy, wallet: walletAmoy },
+  [BSC_CHAIN]: { name: "bsc", router: routerBsc, wallet: walletBsc },
 };
 
 function getChainInfo(chainId) {
@@ -181,6 +196,7 @@ function loadAssets() {
 async function checkRoles() {
   const relayerSepolia = walletSepolia.address;
   const relayerAmoy = walletAmoy.address;
+  const relayerBsc = walletBsc.address;
   const relayerOasis = walletOasis.address;
   const results = [];
   const getCodeSafe = async (provider, address) => {
@@ -223,6 +239,23 @@ async function checkRoles() {
       msg: hasRelayerAmoy
         ? `OK RELAYER_ROLE on Amoy RouteDeliveryTrade for ${relayerAmoy}`
         : `MISSING RELAYER_ROLE on Amoy RouteDeliveryTrade for ${relayerAmoy}`,
+    });
+  }
+
+  const bscCode = await getCodeSafe(bsc, routerBsc.target ?? routerBsc.address);
+  if (bscCode === "0x") {
+    results.push({
+      ok: false,
+      msg: `NO CONTRACT CODE on BSC for router ${routerBsc.target ?? routerBsc.address}`,
+    });
+  } else {
+    const routerRelayerRoleBsc = await routerBsc.RELAYER_ROLE();
+    const hasRelayerBsc = await routerBsc.hasRole(routerRelayerRoleBsc, relayerBsc);
+    results.push({
+      ok: hasRelayerBsc,
+      msg: hasRelayerBsc
+        ? `OK RELAYER_ROLE on BSC RouteDeliveryTrade for ${relayerBsc}`
+        : `MISSING RELAYER_ROLE on BSC RouteDeliveryTrade for ${relayerBsc}`,
     });
   }
 
@@ -461,7 +494,7 @@ app.post("/encryptBasket", (req, res) => {
 });
 
 // POST /execute
-// body: { payChainId: 11155111|80002, batchId: "0x..", payTxHash?: "0x.." }
+// body: { payChainId: 11155111|80002|BSC_CHAIN_ID, batchId: "0x..", payTxHash?: "0x.." }
 app.post("/execute", async (req, res) => {
   try {
     const payChainId = Number(req.body?.payChainId);
@@ -853,8 +886,7 @@ app.get("/entries/asset/:chainId/:rwa1155/:tokenId", async (req, res) => {
   }
 });
 
-app.listen(Number(PORT), async () => {
-  log(`Relayer listening on http://localhost:${PORT}`);
+async function start() {
   try {
     const results = await checkRoles();
     for (const r of results) {
@@ -863,7 +895,13 @@ app.listen(Number(PORT), async () => {
   } catch (err) {
     logErr("Role checks: FAIL", err?.message || err);
   }
-  if (AUTO_EXECUTE.toLowerCase() === "true") {
-    log("AUTO_EXECUTE=true ignored: watchers were removed. Use POST /execute from frontend.");
-  }
-});
+
+  app.listen(Number(PORT), () => {
+    log(`Relayer listening on http://localhost:${PORT}`);
+    if (AUTO_EXECUTE.toLowerCase() === "true") {
+      log("AUTO_EXECUTE=true ignored: watchers were removed. Use POST /execute from frontend.");
+    }
+  });
+}
+
+start();
